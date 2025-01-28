@@ -6,6 +6,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/display.h>
+#include <zephyr/drivers/gpio.h>
+
+#include <lvgl.h>
 
 #include <app/drivers/blink.h>
 
@@ -20,10 +24,17 @@ int main(void)
 {
 	int ret;
 	unsigned int period_ms = BLINK_PERIOD_MS_MAX;
-	const struct device *sensor, *blink;
+	const struct device *sensor, *blink, *display_dev;
 	struct sensor_value last_val = { 0 }, val;
+	lv_obj_t *hello_world_label;
 
 	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
+	
+	display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+	if (!device_is_ready(display_dev)) {
+		LOG_ERR("Device not ready, aborting test");
+		return 0;
+	}
 
 	sensor = DEVICE_DT_GET(DT_NODELABEL(example_sensor));
 	if (!device_is_ready(sensor)) {
@@ -44,6 +55,15 @@ int main(void)
 	}
 
 	printk("Use the sensor to change LED blinking period\n");
+
+
+	hello_world_label = lv_label_create(lv_scr_act());
+	lv_label_set_text(hello_world_label, "Hello world!");
+	lv_obj_align(hello_world_label, LV_ALIGN_CENTER, 0, 0);
+
+	lv_timer_handler();
+	display_blanking_off(display_dev);
+
 
 	while (1) {
 		ret = sensor_sample_fetch(sensor);
