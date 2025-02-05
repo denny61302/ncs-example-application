@@ -18,19 +18,24 @@
 
 #include <bluetooth/services/nus.h>
 
-#include <app/drivers/blink.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/sys/poweroff.h>
 
 #include <app_version.h>
 
 LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
 
-#define BLINK_PERIOD_MS_STEP 100U
-#define BLINK_PERIOD_MS_MAX  1000U
-
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN	(sizeof(DEVICE_NAME) - 1)
 
 lv_obj_t *text_label;
+
+static const struct gpio_dt_spec sw0 = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
+static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
+
+const struct device *display_dev;
 
 static K_SEM_DEFINE(ble_init_ok, 0, 1);
 
@@ -62,6 +67,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 	lv_label_set_text(text_label, "BLE Connected");
 	lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+
+	gpio_pin_set_dt(&led1, 1);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -79,6 +86,9 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	lv_label_set_text(text_label, "BLE Disconnected");
 	lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+
+	gpio_pin_set_dt(&led1, 0);
+	gpio_pin_set_dt(&led2, 0);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -96,26 +106,45 @@ static void send_enabled(enum bt_nus_send_status status)
 	{
 		lv_label_set_text(text_label, "BLE Notifications Enabled");
 		lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+		gpio_pin_set_dt(&led2, 1);
 	}
 	else
 	{
 		lv_label_set_text(text_label, "BLE Notifications Disabled");
 		lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+		gpio_pin_set_dt(&led2, 0);
 	}
+}
+
+void system_off(void)
+{
+	int err;
+	
+	LOG_INF("System off");
+
+	err = pm_device_action_run(display_dev, PM_DEVICE_ACTION_SUSPEND);
+	if (err < 0) {
+		printf("Could not suspend display (%d)\n", err);
+	}
+
+	gpio_pin_set_dt(&led0, 0);
+	gpio_pin_set_dt(&led1, 0);
+	gpio_pin_set_dt(&led2, 0);
+
+	sys_poweroff();
 }
 
 // prase received data
 void parse_data(const uint8_t *const data, uint16_t len)
 {
-	// command "POWER OFF"
+	// command "OFF"
 
-	if (len == 9)
+	if (len == 3 && data[0] == 'O' && data[1] == 'F' && data[2] == 'F')
 	{
-		if (data[0] == 'P' && data[1] == 'O' && data[2] == 'W' && data[3] == 'E' && data[4] == 'R' && data[5] == ' ' && data[6] == 'O' && data[7] == 'F' && data[8] == 'F')
-		{
-			LOG_INF("Received command: POWER OFF");			
-		}
-	}
+		LOG_INF("Received OFF command");
+		
+		system_off();
+	}	
 
 }
 
@@ -140,11 +169,7 @@ static struct bt_nus_cb nus_cb = {
 int main(void)
 {
 	int ret;
-	int err = 0;
-	unsigned int period_ms = BLINK_PERIOD_MS_MAX;
-	const struct device *sensor, *blink, *display_dev;
-	struct sensor_value last_val = { 0 }, val;
-	
+	int err = 0;	
 
 	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
 	
@@ -152,28 +177,41 @@ int main(void)
 	if (!device_is_ready(display_dev)) {
 		LOG_ERR("Device not ready, aborting test");
 		return 0;
-	}
+	}	
 
-	sensor = DEVICE_DT_GET(DT_NODELABEL(example_sensor));
-	if (!device_is_ready(sensor)) {
-		LOG_ERR("Sensor not ready");
-		return 0;
-	}
-
-	blink = DEVICE_DT_GET(DT_NODELABEL(blink_led));
-	if (!device_is_ready(blink)) {
-		LOG_ERR("Blink LED not ready");
-		return 0;
-	}
-
-	ret = blink_off(blink);
+	ret = gpio_pin_configure_dt(&sw0, GPIO_INPUT);
 	if (ret < 0) {
-		LOG_ERR("Could not turn off LED (%d)", ret);
+		LOG_ERR("Could not configure sw0 GPIO (%d)\n", ret);
 		return 0;
 	}
 
-	printk("Use the sensor to change LED blinking period\n");
+	ret = gpio_pin_interrupt_configure_dt(&sw0, GPIO_INT_LEVEL_ACTIVE);
+	if (ret < 0) {
+		LOG_ERR("Could not configure sw0 GPIO interrupt (%d)\n", ret);
+		return 0;
+	}
 
+	ret = gpio_pin_configure_dt(&led0, GPIO_OUTPUT);
+	if (ret < 0) {
+		LOG_ERR("Could not configure led0 GPIO (%d)\n", ret);
+		return 0;
+	}
+
+	ret = gpio_pin_configure_dt(&led1, GPIO_OUTPUT);
+	if (ret < 0) {
+		LOG_ERR("Could not configure led1 GPIO (%d)\n", ret);
+		return 0;
+	}
+
+	ret = gpio_pin_configure_dt(&led2, GPIO_OUTPUT);
+	if (ret < 0) {
+		LOG_ERR("Could not configure led2 GPIO (%d)\n", ret);
+		return 0;
+	}
+
+	gpio_pin_set_dt(&led0, 0);
+	gpio_pin_set_dt(&led1, 0);
+	gpio_pin_set_dt(&led2, 0);
 
 	text_label = lv_label_create(lv_scr_act());
 	lv_label_set_text(text_label, "Bluetooth UART example");
@@ -209,32 +247,7 @@ int main(void)
 		return 0;
 	}
 
-	while (1) {
-		ret = sensor_sample_fetch(sensor);
-		if (ret < 0) {
-			LOG_ERR("Could not fetch sample (%d)", ret);
-			return 0;
-		}
-
-		ret = sensor_channel_get(sensor, SENSOR_CHAN_PROX, &val);
-		if (ret < 0) {
-			LOG_ERR("Could not get sample (%d)", ret);
-			return 0;
-		}
-
-		if ((last_val.val1 == 0) && (val.val1 == 1)) {
-			if (period_ms == 0U) {
-				period_ms = BLINK_PERIOD_MS_MAX;
-			} else {
-				period_ms -= BLINK_PERIOD_MS_STEP;
-			}
-
-			printk("Proximity detected, setting LED period to %u ms\n",
-			       period_ms);
-			blink_set_period_ms(blink, period_ms);
-		}
-
-		last_val = val;
+	while (1) {		
 
 		if (conn_state == BT_NUS_SEND_STATUS_ENABLED)
 		{
@@ -251,6 +264,8 @@ int main(void)
 		{
 			LOG_INF("BLE connection not enabled");
 		}
+
+		gpio_pin_toggle_dt(&led0);
 
 		lv_timer_handler();
 		k_sleep(K_MSEC(100));

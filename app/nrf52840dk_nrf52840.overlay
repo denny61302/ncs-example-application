@@ -12,14 +12,5 @@
 // You can also visit the nRF DeviceTree extension documentation at https://docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/ncs_configure_app.html#devicetree-support-in-the-extension
 
 / {
-	example_sensor: example-sensor {
-		compatible = "zephyr,example-sensor";
-		input-gpios = <&gpio0 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-	};
-
-	blink_led: blink-led {
-		compatible = "blink-gpio-led";
-		led-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
-		blink-period-ms = <1000>;
-	};
+	
 };
