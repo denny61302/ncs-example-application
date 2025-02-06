@@ -21,12 +21,38 @@
 #include <zephyr/pm/device.h>
 #include <zephyr/sys/poweroff.h>
 
+#include <zephyr/storage/disk_access.h>
+#include <zephyr/fs/fs.h>
+
+#include <ff.h>
+
 #include <app_version.h>
 
 LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
 
+#define DISK_DRIVE_NAME "SD"
+#define DISK_MOUNT_PT "/"DISK_DRIVE_NAME":"
+
+#define FS_RET_OK FR_OK
+
+#define MAX_PATH 128
+#define SOME_FILE_NAME "some.dat"
+#define SOME_DIR_NAME "some"
+#define SOME_REQUIRED_LEN MAX(sizeof(SOME_FILE_NAME), sizeof(SOME_DIR_NAME))
+
+static int lsdir(const char *path);
+
+static const char *disk_mount_pt = DISK_MOUNT_PT;
+
+static FATFS fat_fs;
+/* mounting info */
+static struct fs_mount_t mp = {
+	.type = FS_FATFS,
+	.fs_data = &fat_fs,
+};
+
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN	(sizeof(DEVICE_NAME) - 1)
+#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 
 lv_obj_t *text_label;
 
@@ -55,7 +81,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
 
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Connection failed, err 0x%02x %s", err, bt_hci_err_to_str(err));
 		return;
 	}
@@ -79,7 +106,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	LOG_INF("Disconnected: %s, reason 0x%02x %s", addr, reason, bt_hci_err_to_str(reason));
 
-	if (current_conn) {
+	if (current_conn)
+	{
 		bt_conn_unref(current_conn);
 		current_conn = NULL;
 	}
@@ -92,7 +120,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
-	.connected    = connected,
+	.connected = connected,
 	.disconnected = disconnected,
 };
 
@@ -119,11 +147,12 @@ static void send_enabled(enum bt_nus_send_status status)
 void system_off(void)
 {
 	int err;
-	
+
 	LOG_INF("System off");
 
 	err = pm_device_action_run(display_dev, PM_DEVICE_ACTION_SUSPEND);
-	if (err < 0) {
+	if (err < 0)
+	{
 		printf("Could not suspend display (%d)\n", err);
 	}
 
@@ -142,14 +171,13 @@ void parse_data(const uint8_t *const data, uint16_t len)
 	if (len == 3 && data[0] == 'O' && data[1] == 'F' && data[2] == 'F')
 	{
 		LOG_INF("Received OFF command");
-		
-		system_off();
-	}	
 
+		system_off();
+	}
 }
 
 static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data,
-			  uint16_t len)
+						  uint16_t len)
 {
 	int err;
 	char addr[BT_ADDR_LE_STR_LEN] = {0};
@@ -166,45 +194,161 @@ static struct bt_nus_cb nus_cb = {
 	.received = bt_receive_cb,
 };
 
+/* List dir entry by path
+ *
+ * @param path Absolute path to list
+ *
+ * @return Negative errno code on error, number of listed entries on
+ *         success.
+ */
+static int lsdir(const char *path)
+{
+	int res;
+	struct fs_dir_t dirp;
+	static struct fs_dirent entry;
+	int count = 0;
+
+	fs_dir_t_init(&dirp);
+
+	/* Verify fs_opendir() */
+	res = fs_opendir(&dirp, path);
+	if (res) {
+		printk("Error opening dir %s [%d]\n", path, res);
+		return res;
+	}
+
+	printk("\nListing dir %s ...\n", path);
+	for (;;) {
+		/* Verify fs_readdir() */
+		res = fs_readdir(&dirp, &entry);
+
+		/* entry.name[0] == 0 means end-of-dir */
+		if (res || entry.name[0] == 0) {
+			break;
+		}
+
+		if (entry.type == FS_DIR_ENTRY_DIR) {
+			printk("[DIR ] %s\n", entry.name);
+		} else {
+			printk("[FILE] %s (size = %zu)\n",
+				entry.name, entry.size);
+		}
+		count++;
+	}
+
+	/* Verify fs_closedir() */
+	fs_closedir(&dirp);
+	if (res == 0) {
+		res = count;
+	}
+
+	return res;
+}
+
+static int init_sd_card(void)
+{
+	static const char *disk_pdrv = "SD";
+	uint64_t memory_size_mb;
+	uint32_t block_count;
+	uint32_t block_size;
+	int err;
+
+	if (disk_access_ioctl(disk_pdrv,
+						  DISK_IOCTL_CTRL_INIT, NULL) != 0)
+	{
+		LOG_ERR("Storage init ERROR!");
+		return -1;
+	}
+
+	if (disk_access_ioctl(disk_pdrv, DISK_IOCTL_GET_SECTOR_COUNT, &block_count))
+	{
+		printk("Unable to get sector count");
+		return -1;
+	}
+
+	if (disk_access_ioctl(disk_pdrv, DISK_IOCTL_GET_SECTOR_SIZE, &block_size))
+	{
+		printk("Unable to get sector size");
+		return -1;
+	}
+
+	memory_size_mb = (uint64_t)block_count * block_size / (1024 * 1024);
+	printk("Memory Size(MB): %u\n", (uint32_t)memory_size_mb);
+
+	if (disk_access_ioctl(disk_pdrv,
+						  DISK_IOCTL_CTRL_DEINIT, NULL) != 0)
+	{
+		LOG_ERR("Storage deinit ERROR!");
+		return -1;
+	}
+
+	mp.mnt_point = disk_mount_pt;
+
+	err = fs_mount(&mp);
+	if (err)
+	{
+		printk("Error mounting fat_fs [%d]\n", err);
+		return err;
+	}
+
+	if (lsdir(disk_mount_pt) == 0) {
+
+	}
+
+	return 0;
+}
+
 int main(void)
 {
 	int ret;
-	int err = 0;	
+	int err = 0;
 
 	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
-	
-	display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
-	if (!device_is_ready(display_dev)) {
+
+		display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+	if (!device_is_ready(display_dev))
+	{
 		LOG_ERR("Device not ready, aborting test");
 		return 0;
-	}	
+	}
+
+	if (init_sd_card() != 0)
+	{
+		LOG_ERR("Failed to initialize SD card\n");
+		return 0;
+	}
 
 	ret = gpio_pin_configure_dt(&sw0, GPIO_INPUT);
-	if (ret < 0) {
+	if (ret < 0)
+	{
 		LOG_ERR("Could not configure sw0 GPIO (%d)\n", ret);
 		return 0;
 	}
 
 	ret = gpio_pin_interrupt_configure_dt(&sw0, GPIO_INT_LEVEL_ACTIVE);
-	if (ret < 0) {
+	if (ret < 0)
+	{
 		LOG_ERR("Could not configure sw0 GPIO interrupt (%d)\n", ret);
 		return 0;
 	}
 
 	ret = gpio_pin_configure_dt(&led0, GPIO_OUTPUT);
-	if (ret < 0) {
+	if (ret < 0)
+	{
 		LOG_ERR("Could not configure led0 GPIO (%d)\n", ret);
 		return 0;
 	}
 
 	ret = gpio_pin_configure_dt(&led1, GPIO_OUTPUT);
-	if (ret < 0) {
+	if (ret < 0)
+	{
 		LOG_ERR("Could not configure led1 GPIO (%d)\n", ret);
 		return 0;
 	}
 
 	ret = gpio_pin_configure_dt(&led2, GPIO_OUTPUT);
-	if (ret < 0) {
+	if (ret < 0)
+	{
 		LOG_ERR("Could not configure led2 GPIO (%d)\n", ret);
 		return 0;
 	}
@@ -215,13 +359,14 @@ int main(void)
 
 	text_label = lv_label_create(lv_scr_act());
 	lv_label_set_text(text_label, "Bluetooth UART example");
-	lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+	lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);	
 
 	lv_timer_handler();
 	display_blanking_off(display_dev);
 
 	err = bt_enable(NULL);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Bluetooth init failed (err %d)", err);
 		return 0;
 	}
@@ -230,24 +375,23 @@ int main(void)
 
 	k_sem_give(&ble_init_ok);
 
-	LOG_INF("Bluetooth initialized");
-
-	k_sem_give(&ble_init_ok);
-
 	err = bt_nus_init(&nus_cb);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Failed to initialize UART service (err: %d)", err);
 		return 0;
 	}
 
 	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad), sd,
-			      ARRAY_SIZE(sd));
-	if (err) {
+						  ARRAY_SIZE(sd));
+	if (err)
+	{
 		LOG_ERR("Advertising failed to start (err %d)", err);
 		return 0;
 	}
 
-	while (1) {		
+	while (1)
+	{
 
 		if (conn_state == BT_NUS_SEND_STATUS_ENABLED)
 		{
@@ -268,10 +412,8 @@ int main(void)
 		gpio_pin_toggle_dt(&led0);
 
 		lv_timer_handler();
-		k_sleep(K_MSEC(100));
-
+		k_sleep(K_MSEC(1000));
 	}
 
 	return 0;
 }
-
