@@ -23,11 +23,20 @@
 		compatible = "zephyr,sdhc-spi-slot";
 		reg = <1>;
 		status = "okay";
-		label = "SDHC0";
+		label = "SDHC0";		
 		mmc {
 			compatible = "zephyr,sdmmc-disk";
 			status = "okay";
+			disk-name = "SD";
 		};
 		spi-max-frequency = <32000000>;
+	};
+};
+
+&i2c0 {
+	max30101@57 {
+		status = "okay";
+		compatible = "maxim,max30101";
+		reg = <0x57>;
 	};
 };

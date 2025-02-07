@@ -15,8 +15,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/hci.h>
-
-#include <bluetooth/services/nus.h>
+#include <zephyr/bluetooth/services/nus.h>
 
 #include <zephyr/pm/device.h>
 #include <zephyr/sys/poweroff.h>
@@ -31,7 +30,8 @@
 LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
 
 #define DISK_DRIVE_NAME "SD"
-#define DISK_MOUNT_PT "/"DISK_DRIVE_NAME":"
+#define DISK_MOUNT_PT "/" DISK_DRIVE_NAME ":"
+#define IMG_FILE_PATH "/" DISK_DRIVE_NAME ":/51.png"
 
 #define FS_RET_OK FR_OK
 
@@ -61,12 +61,11 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
 
-const struct device *display_dev;
-
-static K_SEM_DEFINE(ble_init_ok, 0, 1);
+const struct device *display_dev, *max30101_dev;
 
 static struct bt_conn *current_conn;
-static uint8_t conn_state = BT_NUS_SEND_STATUS_DISABLED;
+
+void parse_data(uint8_t *data, uint16_t len);
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -74,7 +73,46 @@ static const struct bt_data ad[] = {
 };
 
 static const struct bt_data sd[] = {
-	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
+	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_SRV_VAL),
+};
+
+static void notif_enabled(bool enabled, void *ctx)
+{
+	ARG_UNUSED(ctx);
+
+	printk("%s() - %s\n", __func__, (enabled ? "Enabled" : "Disabled"));
+
+	if (enabled)
+	{
+		lv_label_set_text(text_label, "BLE Notifications Enabled");
+		lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
+		gpio_pin_set_dt(&led2, 1);
+	}
+	else
+	{
+		lv_label_set_text(text_label, "BLE Notifications Disabled");
+		lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
+		gpio_pin_set_dt(&led2, 0);
+	}
+}
+
+static void received(struct bt_conn *conn, const void *data, uint16_t len, void *ctx)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(ctx);
+
+	char addr[BT_ADDR_LE_STR_LEN] = {0};
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, ARRAY_SIZE(addr));
+
+	LOG_INF("Received data from: %s", addr);
+
+	parse_data((uint8_t *)data, len);
+}
+
+struct bt_nus_cb nus_listener = {
+	.notif_enabled = notif_enabled,
+	.received = received,
 };
 
 static void connected(struct bt_conn *conn, uint8_t err)
@@ -93,7 +131,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	current_conn = bt_conn_ref(conn);
 
 	lv_label_set_text(text_label, "BLE Connected");
-	lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+	lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
 	gpio_pin_set_dt(&led1, 1);
 }
@@ -101,6 +139,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
+	int err;
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
@@ -113,36 +152,18 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	}
 
 	lv_label_set_text(text_label, "BLE Disconnected");
-	lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
+	lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
 	gpio_pin_set_dt(&led1, 0);
 	gpio_pin_set_dt(&led2, 0);
+	
+	// bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
 };
-
-static void send_enabled(enum bt_nus_send_status status)
-{
-	conn_state = status;
-
-	LOG_INF("Notifications %sabled", (status == BT_NUS_SEND_STATUS_ENABLED) ? "en" : "dis");
-
-	if (status == BT_NUS_SEND_STATUS_ENABLED)
-	{
-		lv_label_set_text(text_label, "BLE Notifications Enabled");
-		lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
-		gpio_pin_set_dt(&led2, 1);
-	}
-	else
-	{
-		lv_label_set_text(text_label, "BLE Notifications Disabled");
-		lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 0);
-		gpio_pin_set_dt(&led2, 0);
-	}
-}
 
 void system_off(void)
 {
@@ -164,7 +185,7 @@ void system_off(void)
 }
 
 // prase received data
-void parse_data(const uint8_t *const data, uint16_t len)
+void parse_data(uint8_t *data, uint16_t len)
 {
 	// command "OFF"
 
@@ -175,24 +196,6 @@ void parse_data(const uint8_t *const data, uint16_t len)
 		system_off();
 	}
 }
-
-static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data,
-						  uint16_t len)
-{
-	int err;
-	char addr[BT_ADDR_LE_STR_LEN] = {0};
-
-	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, ARRAY_SIZE(addr));
-
-	LOG_INF("Received data from: %s", addr);
-
-	parse_data(data, len);
-}
-
-static struct bt_nus_cb nus_cb = {
-	.send_enabled = send_enabled,
-	.received = bt_receive_cb,
-};
 
 /* List dir entry by path
  *
@@ -212,33 +215,40 @@ static int lsdir(const char *path)
 
 	/* Verify fs_opendir() */
 	res = fs_opendir(&dirp, path);
-	if (res) {
+	if (res)
+	{
 		printk("Error opening dir %s [%d]\n", path, res);
 		return res;
 	}
 
 	printk("\nListing dir %s ...\n", path);
-	for (;;) {
+	for (;;)
+	{
 		/* Verify fs_readdir() */
 		res = fs_readdir(&dirp, &entry);
 
 		/* entry.name[0] == 0 means end-of-dir */
-		if (res || entry.name[0] == 0) {
+		if (res || entry.name[0] == 0)
+		{
 			break;
 		}
 
-		if (entry.type == FS_DIR_ENTRY_DIR) {
+		if (entry.type == FS_DIR_ENTRY_DIR)
+		{
 			printk("[DIR ] %s\n", entry.name);
-		} else {
+		}
+		else
+		{
 			printk("[FILE] %s (size = %zu)\n",
-				entry.name, entry.size);
+				   entry.name, entry.size);
 		}
 		count++;
 	}
 
 	/* Verify fs_closedir() */
 	fs_closedir(&dirp);
-	if (res == 0) {
+	if (res == 0)
+	{
 		res = count;
 	}
 
@@ -251,6 +261,7 @@ static int init_sd_card(void)
 	uint64_t memory_size_mb;
 	uint32_t block_count;
 	uint32_t block_size;
+
 	int err;
 
 	if (disk_access_ioctl(disk_pdrv,
@@ -291,8 +302,8 @@ static int init_sd_card(void)
 		return err;
 	}
 
-	if (lsdir(disk_mount_pt) == 0) {
-
+	if (lsdir(disk_mount_pt) == 0)
+	{
 	}
 
 	return 0;
@@ -305,7 +316,7 @@ int main(void)
 
 	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
 
-		display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+	display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 	if (!device_is_ready(display_dev))
 	{
 		LOG_ERR("Device not ready, aborting test");
@@ -357,12 +368,24 @@ int main(void)
 	gpio_pin_set_dt(&led1, 0);
 	gpio_pin_set_dt(&led2, 0);
 
+	lv_obj_t *img = lv_img_create(lv_scr_act());
+
+	lv_img_set_src(img, IMG_FILE_PATH);
+	lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+
 	text_label = lv_label_create(lv_scr_act());
 	lv_label_set_text(text_label, "Bluetooth UART example");
-	lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);	
+	lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
 	lv_timer_handler();
 	display_blanking_off(display_dev);
+
+	err = bt_nus_cb_register(&nus_listener, NULL);
+	if (err)
+	{
+		printk("Failed to register NUS callback: %d\n", err);
+		return err;
+	}
 
 	err = bt_enable(NULL);
 	if (err)
@@ -373,42 +396,15 @@ int main(void)
 
 	LOG_INF("Bluetooth initialized");
 
-	k_sem_give(&ble_init_ok);
-
-	err = bt_nus_init(&nus_cb);
+	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 	if (err)
 	{
-		LOG_ERR("Failed to initialize UART service (err: %d)", err);
-		return 0;
-	}
-
-	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad), sd,
-						  ARRAY_SIZE(sd));
-	if (err)
-	{
-		LOG_ERR("Advertising failed to start (err %d)", err);
-		return 0;
+		printk("Failed to start advertising: %d\n", err);
+		return err;
 	}
 
 	while (1)
-	{
-
-		if (conn_state == BT_NUS_SEND_STATUS_ENABLED)
-		{
-			LOG_INF("Sending data over BLE connection");
-			uint8_t data[100];
-
-			strcpy(data, "Hello World!");
-
-			int len = strlen(data);
-
-			bt_nus_send(NULL, data, len);
-		}
-		else
-		{
-			LOG_INF("BLE connection not enabled");
-		}
-
+	{	
 		gpio_pin_toggle_dt(&led0);
 
 		lv_timer_handler();
