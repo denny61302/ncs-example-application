@@ -65,6 +65,8 @@ const struct device *display_dev, *max30101_dev;
 
 static struct bt_conn *current_conn;
 
+static struct k_work advertise_work;
+
 void parse_data(uint8_t *data, uint16_t len);
 
 static const struct bt_data ad[] = {
@@ -115,6 +117,20 @@ struct bt_nus_cb nus_listener = {
 	.received = received,
 };
 
+static void advertise(struct k_work *work)
+{
+	int rc;
+
+	rc = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	if (rc) {
+		LOG_ERR("Advertising failed to start (rc %d)", rc);
+		return;
+	}
+
+	LOG_INF("Advertising successfully started");
+}
+
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -122,6 +138,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	if (err)
 	{
 		LOG_ERR("Connection failed, err 0x%02x %s", err, bt_hci_err_to_str(err));
+		k_work_submit(&advertise_work);
 		return;
 	}
 
@@ -139,7 +156,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
-	int err;
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
@@ -156,14 +172,27 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	gpio_pin_set_dt(&led1, 0);
 	gpio_pin_set_dt(&led2, 0);
-	
-	// bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
+}
+
+static void on_conn_recycled(void)
+{
+	k_work_submit(&advertise_work);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.recycled = on_conn_recycled,
 };
+
+static void bt_ready(int err)
+{
+	if (err != 0) {
+		LOG_ERR("Bluetooth failed to initialise: %d", err);
+	} else {
+		k_work_submit(&advertise_work);
+	}
+}
 
 void system_off(void)
 {
@@ -387,7 +416,9 @@ int main(void)
 		return err;
 	}
 
-	err = bt_enable(NULL);
+	k_work_init(&advertise_work, advertise);
+
+	err = bt_enable(bt_ready);
 	if (err)
 	{
 		LOG_ERR("Bluetooth init failed (err %d)", err);
@@ -395,13 +426,6 @@ int main(void)
 	}
 
 	LOG_INF("Bluetooth initialized");
-
-	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-	if (err)
-	{
-		printk("Failed to start advertising: %d\n", err);
-		return err;
-	}
 
 	while (1)
 	{	
