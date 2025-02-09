@@ -61,7 +61,7 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
 
-const struct device *display_dev, *max30101_dev;
+const struct device *display_dev;
 
 static struct bt_conn *current_conn;
 
@@ -119,11 +119,11 @@ struct bt_nus_cb nus_listener = {
 
 static void advertise(struct k_work *work)
 {
-	int rc;
+	int err;
 
-	rc = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-	if (rc) {
-		LOG_ERR("Advertising failed to start (rc %d)", rc);
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	if (err) {
+		LOG_ERR("Advertising failed to start (rc %d)", err);
 		return;
 	}
 
@@ -341,7 +341,6 @@ static int init_sd_card(void)
 int main(void)
 {
 	int ret;
-	int err = 0;
 
 	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
 
@@ -409,19 +408,19 @@ int main(void)
 	lv_timer_handler();
 	display_blanking_off(display_dev);
 
-	err = bt_nus_cb_register(&nus_listener, NULL);
-	if (err)
+	ret = bt_nus_cb_register(&nus_listener, NULL);
+	if (ret)
 	{
-		printk("Failed to register NUS callback: %d\n", err);
-		return err;
+		printk("Failed to register NUS callback: %d\n", ret);
+		return ret;
 	}
 
 	k_work_init(&advertise_work, advertise);
 
-	err = bt_enable(bt_ready);
-	if (err)
+	ret = bt_enable(bt_ready);
+	if (ret)
 	{
-		LOG_ERR("Bluetooth init failed (err %d)", err);
+		LOG_ERR("Bluetooth init failed (err %d)", ret);
 		return 0;
 	}
 
