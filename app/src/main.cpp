@@ -27,6 +27,24 @@
 
 #include <app_version.h>
 
+#include "MAX30101.hpp"
+
+bool is_use_display = true;
+bool is_use_ble = true;
+bool is_use_sd = true;
+bool is_use_ppg = true;
+
+#define PPG_STACK_SIZE 500
+#define PPG_PRIORITY 5
+
+extern void ppg_entry_point(void *, void *, void *);
+
+K_THREAD_DEFINE(my_tid, PPG_STACK_SIZE,
+				ppg_entry_point, NULL, NULL, NULL,
+				PPG_PRIORITY, 0, 0);
+
+MAX30101 ppg = MAX30101();
+
 LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
 
 #define DISK_DRIVE_NAME "SD"
@@ -61,7 +79,7 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
 
-const struct device *display_dev;
+const struct device *display_dev, *max30101_dev;
 
 static struct bt_conn *current_conn;
 
@@ -122,14 +140,14 @@ static void advertise(struct k_work *work)
 	int err;
 
 	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("Advertising failed to start (rc %d)", err);
 		return;
 	}
 
 	LOG_INF("Advertising successfully started");
 }
-
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -187,9 +205,12 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 static void bt_ready(int err)
 {
-	if (err != 0) {
+	if (err != 0)
+	{
 		LOG_ERR("Bluetooth failed to initialise: %d", err);
-	} else {
+	}
+	else
+	{
 		k_work_submit(&advertise_work);
 	}
 }
@@ -344,17 +365,45 @@ int main(void)
 
 	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
 
-	display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
-	if (!device_is_ready(display_dev))
+	if (is_use_display)
 	{
-		LOG_ERR("Device not ready, aborting test");
-		return 0;
+
+		display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
+		if (!device_is_ready(display_dev))
+		{
+			LOG_ERR("Device not ready, aborting test");
+			return 0;
+		}
 	}
 
-	if (init_sd_card() != 0)
+	if (is_use_ble)
 	{
-		LOG_ERR("Failed to initialize SD card\n");
-		return 0;
+		ret = bt_nus_cb_register(&nus_listener, NULL);
+		if (ret)
+		{
+			printk("Failed to register NUS callback: %d\n", ret);
+			return ret;
+		}
+
+		k_work_init(&advertise_work, advertise);
+
+		ret = bt_enable(bt_ready);
+		if (ret)
+		{
+			LOG_ERR("Bluetooth init failed (err %d)", ret);
+			return 0;
+		}
+
+		LOG_INF("Bluetooth initialized");
+	}
+
+	if (is_use_sd)
+	{
+		if (init_sd_card() != 0)
+		{
+			LOG_ERR("Failed to initialize SD card\n");
+			return 0;
+		}
 	}
 
 	ret = gpio_pin_configure_dt(&sw0, GPIO_INPUT);
@@ -396,43 +445,83 @@ int main(void)
 	gpio_pin_set_dt(&led1, 0);
 	gpio_pin_set_dt(&led2, 0);
 
-	lv_obj_t *img = lv_img_create(lv_scr_act());
-
-	lv_img_set_src(img, IMG_FILE_PATH);
-	lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
-
-	text_label = lv_label_create(lv_scr_act());
-	lv_label_set_text(text_label, "Bluetooth UART example");
-	lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
-
-	lv_timer_handler();
-	display_blanking_off(display_dev);
-
-	ret = bt_nus_cb_register(&nus_listener, NULL);
-	if (ret)
+	if (is_use_display)
 	{
-		printk("Failed to register NUS callback: %d\n", ret);
-		return ret;
-	}
+		lv_obj_t *img = lv_img_create(lv_scr_act());
 
-	k_work_init(&advertise_work, advertise);
+		lv_img_set_src(img, IMG_FILE_PATH);
+		lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
 
-	ret = bt_enable(bt_ready);
-	if (ret)
-	{
-		LOG_ERR("Bluetooth init failed (err %d)", ret);
-		return 0;
-	}
+		text_label = lv_label_create(lv_scr_act());
+		lv_label_set_text(text_label, "Bluetooth UART example");
+		lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
-	LOG_INF("Bluetooth initialized");
+		lv_timer_handler();
+		display_blanking_off(display_dev);
+	}	
 
 	while (1)
-	{	
-		gpio_pin_toggle_dt(&led0);
-
+	{
+		gpio_pin_toggle_dt(&led0);	
 		lv_timer_handler();
 		k_sleep(K_MSEC(1000));
 	}
 
 	return 0;
+}
+
+void ppg_entry_point(void *a, void *b, void *c)
+{
+	max30101_dev = DEVICE_DT_GET_ANY(maxim_max30101);
+
+	if (!device_is_ready(max30101_dev))
+	{
+		LOG_ERR("max30101 device is not ready\n");
+	}
+
+	if (!ppg.begin(max30101_dev))
+	{
+		LOG_ERR("Could not begin PPG device...");
+	}
+
+	// Setup to sense up to 18 inches, max LED brightness
+	uint8_t ledBrightnessRed = 0xff;   // Options: 0=Off to 255=50mA
+	uint8_t ledBrightnessIR = 0xff;	   // Options: 0=Off to 255=50mA
+	uint8_t ledBrightnessGreen = 0xff; // Options: 0=Off to 255=50mA
+	uint8_t sampleAverage = 2;		   // Options: 1, 2, 4, 8, 16, 32
+	uint8_t ledMode = 3;			   // Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green
+	int sampleRate = 100;			   // Options: 50, 100, 200, 400, 800, 1000, 1600, 3200
+	int pulseWidth = 411;			   // Options: 69, 118, 215, 411
+	int adcRange = 16384;			   // Options: 2048, 4096, 8192, 16384
+
+	ppg.setup(ledBrightnessRed, ledBrightnessIR, ledBrightnessGreen, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+
+	uint32_t red;
+	uint32_t ir;
+	uint32_t green;
+	uint32_t samplesTaken = 0;
+	float sampleRateInHz;
+
+	uint32_t strat_time = k_uptime_get_32();
+	
+	while (1)
+	{
+		ppg.check(); // Check the sensor, read up to 3 samples
+
+		while (ppg.available()) // do we have new data?
+		{
+			samplesTaken++;
+
+			red = ppg.getFIFORed();
+			ir = ppg.getFIFOIR();
+			green = ppg.getFIFOGreen();
+
+			sampleRateInHz = samplesTaken / ((k_uptime_get_32() - strat_time) / 1000.0);
+
+			printk("Hz:%.2f,R:%d,IR:%d,G:%d\n",sampleRateInHz, red, ir, green);
+
+			ppg.nextSample(); // We're finished with this sample so move to next sample
+			k_yield();
+		}	
+	}
 }
