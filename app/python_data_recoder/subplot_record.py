@@ -70,7 +70,7 @@ class SerialPlotterWindow(QMainWindow):
         
         # Set fixed height for consistent sizing
         graph_widget.setMinimumHeight(200)
-        graph_widget.setMaximumHeight(250)
+        graph_widget.setMaximumHeight(400)
 
         # Use QVBoxLayout for better control
         graph_widget_item = QWidget()
@@ -234,13 +234,13 @@ if __name__ == "__main__":
     plotter_window = SerialPlotterWindow()
     
     # Reorganize subplot layout (2x4 grid)
-    plotter_window.add_graph("Count", "Sample", "Value", 0, 0, "b")
+    plotter_window.add_graph("Count", "Sample", "Value", 0, 0, "w")
     plotter_window.add_graph("Red", "Sample", "Value", 0, 1, "r")
     plotter_window.add_graph("IR", "Sample", "Value", 0, 2, "y")
     plotter_window.add_graph("Green", "Sample", "Value", 0, 3, "g")
     plotter_window.add_graph("Acc X", "Sample", "Value", 1, 0, "r")
     plotter_window.add_graph("Acc Y", "Sample", "Value", 1, 1, "g")
-    plotter_window.add_graph("Acc Z", "Sample", "Value", 1, 2, "b")
+    plotter_window.add_graph("Acc Z", "Sample", "Value", 1, 2, "y")
 
     # Move controls to bottom
     controls_widget = QWidget()
