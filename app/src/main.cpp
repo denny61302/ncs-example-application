@@ -29,18 +29,33 @@
 
 #include "MAX30101.hpp"
 
-bool is_use_display = true;
+bool is_use_display = false;
 bool is_use_ble = true;
-bool is_use_sd = true;
+bool is_use_sd = false;
 bool is_use_ppg = true;
+bool is_use_acc = true;
 
 #define PPG_STACK_SIZE 500
 #define PPG_PRIORITY 5
 
+#define ACC_STACK_SIZE 500
+#define ACC_PRIORITY 5
+
+#define FIFO_SAMPLES 32 // MAX30101 FIFO depth
+static K_SEM_DEFINE(data_sem, 0, 1);
+static struct sensor_value acc_data[3]; // Shared accelerometer data
+static bool new_acc_data = false;
+
 extern void ppg_entry_point(void *, void *, void *);
 
-K_THREAD_DEFINE(my_tid, PPG_STACK_SIZE,
+K_THREAD_DEFINE(ppg_tid, ACC_STACK_SIZE,
 				ppg_entry_point, NULL, NULL, NULL,
+				ACC_PRIORITY, 0, 0);
+
+extern void acc_entry_point(void *, void *, void *);
+
+K_THREAD_DEFINE(acc_tid, PPG_STACK_SIZE,
+				acc_entry_point, NULL, NULL, NULL,
 				PPG_PRIORITY, 0, 0);
 
 MAX30101 ppg = MAX30101();
@@ -79,7 +94,7 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
 
-const struct device *display_dev, *max30101_dev;
+const struct device *display_dev, *max30101_dev, *adxl_dev;
 
 static struct bt_conn *current_conn;
 
@@ -374,6 +389,18 @@ int main(void)
 			LOG_ERR("Device not ready, aborting test");
 			return 0;
 		}
+
+		lv_obj_t *img = lv_img_create(lv_scr_act());
+
+		lv_img_set_src(img, IMG_FILE_PATH);
+		lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+
+		text_label = lv_label_create(lv_scr_act());
+		lv_label_set_text(text_label, "Bluetooth UART example");
+		lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+		lv_timer_handler();
+		display_blanking_off(display_dev);
 	}
 
 	if (is_use_ble)
@@ -445,24 +472,9 @@ int main(void)
 	gpio_pin_set_dt(&led1, 0);
 	gpio_pin_set_dt(&led2, 0);
 
-	if (is_use_display)
-	{
-		lv_obj_t *img = lv_img_create(lv_scr_act());
-
-		lv_img_set_src(img, IMG_FILE_PATH);
-		lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
-
-		text_label = lv_label_create(lv_scr_act());
-		lv_label_set_text(text_label, "Bluetooth UART example");
-		lv_obj_align(text_label, LV_ALIGN_TOP_LEFT, 0, 0);
-
-		lv_timer_handler();
-		display_blanking_off(display_dev);
-	}	
-
 	while (1)
 	{
-		gpio_pin_toggle_dt(&led0);	
+		gpio_pin_toggle_dt(&led0);
 		lv_timer_handler();
 		k_sleep(K_MSEC(1000));
 	}
@@ -501,9 +513,9 @@ void ppg_entry_point(void *a, void *b, void *c)
 	uint32_t green;
 	uint32_t samplesTaken = 0;
 	float sampleRateInHz;
-
+	int sampleingRateTarget = (sampleRate / sampleAverage) + 1;
 	uint32_t strat_time = k_uptime_get_32();
-	
+
 	while (1)
 	{
 		ppg.check(); // Check the sensor, read up to 3 samples
@@ -517,11 +529,56 @@ void ppg_entry_point(void *a, void *b, void *c)
 			green = ppg.getFIFOGreen();
 
 			sampleRateInHz = samplesTaken / ((k_uptime_get_32() - strat_time) / 1000.0);
+			
+			if (samplesTaken % sampleingRateTarget == 0)
+			{
+				samplesTaken = 0;
+			}
 
-			printk("Hz:%.2f,R:%d,IR:%d,G:%d\n",sampleRateInHz, red, ir, green);
+			// Print PPG data only if accelerometer data not ready
+			printk("C:%d,R:%d,IR:%d,G:%d\n",
+				samplesTaken, red, ir, green);
 
 			ppg.nextSample(); // We're finished with this sample so move to next sample
+
+			// Signal accelerometer to read data
+			k_sem_give(&data_sem);
+
 			k_yield();
-		}	
+		}
+	}
+}
+
+void acc_entry_point(void *a, void *b, void *c)
+{
+	struct sensor_value accel[3];
+
+	double x, y, z;
+
+	adxl_dev = DEVICE_DT_GET_ANY(invensense_mpu9250);
+
+	if (!device_is_ready(adxl_dev))
+	{
+		LOG_ERR("adxl device is not ready\n");
+	}
+
+	while (1)
+	{
+		// Wait for PPG data ready signal
+		if (k_sem_take(&data_sem, K_MSEC(10)) == 0)
+		{
+			// Read the acceleration data
+			if (sensor_sample_fetch(adxl_dev) == 0)
+			{
+				sensor_channel_get(adxl_dev, SENSOR_CHAN_ACCEL_XYZ, acc_data);
+				// Get accelerometer values
+				x = sensor_value_to_double(&acc_data[0]);
+				y = sensor_value_to_double(&acc_data[1]);
+				z = sensor_value_to_double(&acc_data[2]);
+
+				// Print synchronized data
+				printk("X:%f,Y:%f,Z:%f\n", x, y, z);
+			}
+		}
 	}
 }

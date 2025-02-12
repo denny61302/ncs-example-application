@@ -17,7 +17,7 @@
 
 &spi3 {
 	status = "okay";
-	cs-gpios = <&arduino_header 16 GPIO_ACTIVE_LOW>, <&gpio1 8 GPIO_ACTIVE_LOW>;
+	cs-gpios = <&gpio1 12 GPIO_ACTIVE_LOW>, <&gpio1 8 GPIO_ACTIVE_LOW>;
 
 	sdhc0: sdhc@1 {
 		compatible = "zephyr,sdhc-spi-slot";
@@ -38,6 +38,19 @@
 		status = "okay";
 		compatible = "maxim,max30101";
 		reg = <0x57>;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	adxl@68 {
+		compatible = "invensense,mpu9250";
+		reg = <0x68>;
+		gyro-sr-div = <10>;
+		gyro-dlpf = <5>;
+		gyro-fs = <250>;
+		accel-fs = <2>;
+		accel-dlpf = "10.2";
 	};
 };
 
