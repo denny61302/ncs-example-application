@@ -142,6 +142,9 @@ if __name__ == "__main__":
     plotter_window.add_sensor("R", 'r')
     plotter_window.add_sensor("IR", 'g')
     plotter_window.add_sensor("G", 'b')
+    plotter_window.add_sensor("X", 'y')
+    plotter_window.add_sensor("Y", 'w')
+    plotter_window.add_sensor("Z", 'b')
 
     if plotter_window.serial_port.open(QSerialPort.ReadWrite):
         plotter_window.show()
