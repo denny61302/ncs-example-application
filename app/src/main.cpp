@@ -498,7 +498,7 @@ void ppg_entry_point(void *a, void *b, void *c)
 
 	// Setup to sense up to 18 inches, max LED brightness
 	uint8_t ledBrightnessRed = 0xff;   // Options: 0=Off to 255=50mA
-	uint8_t ledBrightnessIR = 0xff;	   // Options: 0=Off to 255=50mA
+	uint8_t ledBrightnessIR = 0x19;	   // Options: 0=Off to 255=50mA
 	uint8_t ledBrightnessGreen = 0xff; // Options: 0=Off to 255=50mA
 	uint8_t sampleAverage = 2;		   // Options: 1, 2, 4, 8, 16, 32
 	uint8_t ledMode = 3;			   // Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green
