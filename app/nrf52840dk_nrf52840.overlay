@@ -43,14 +43,13 @@
 
 &i2c1 {
 	status = "okay";
-	adxl@68 {
-		compatible = "invensense,mpu9250";
-		reg = <0x68>;
-		gyro-sr-div = <10>;
-		gyro-dlpf = <5>;
-		gyro-fs = <250>;
-		accel-fs = <2>;
-		accel-dlpf = "10.2";
+	adxl@19 {
+		status = "okay";
+		compatible = "st,lis2dw12";
+		reg = <0x19>;	
+		odr = <400>;
+		power-mode = <4>;	
+		low-noise;
 	};
 };
 
