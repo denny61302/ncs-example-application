@@ -1,0 +1,58 @@
+// To get started, press Ctrl+Space to bring up the completion menu and view the available nodes.
+
+// You can also use the buttons in the sidebar to perform actions on nodes.
+// Actions currently available include:
+
+// * Enabling / disabling the node
+// * Adding the bus to a bus
+// * Removing the node
+// * Connecting ADC channels
+
+// For more help, browse the DeviceTree documentation at https: //docs.zephyrproject.org/latest/guides/dts/index.html
+// You can also visit the nRF DeviceTree extension documentation at https: //docs.nordicsemi.com/bundle/nrf-connect-vscode/page/guides/ncs_configure_app.html#devicetree-support-in-the-extension
+
+&spi1 {
+	status = "disabled";
+};
+
+&spi2 {
+	status = "okay";
+	cs-gpios = <&gpio0 22 GPIO_ACTIVE_LOW>, <&gpio0 18 GPIO_ACTIVE_LOW>;
+
+	sdhc0: sdhc@1 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <1>;
+		status = "okay";
+		label = "SDHC0";		
+		mmc {
+			compatible = "zephyr,sdmmc-disk";
+			status = "okay";
+			disk-name = "SD";
+		};
+		spi-max-frequency = <32000000>;
+	};
+};
+
+&i2c0 {
+	max30101@57 {
+		status = "okay";
+		compatible = "maxim,max30101";
+		reg = <0x57>;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	adxl@19 {
+		status = "okay";
+		compatible = "st,lis2dw12";
+		reg = <0x19>;	
+		odr = <400>;
+		power-mode = <4>;	
+		low-noise;
+	};
+};
+
+// &uart0 {
+// 	current-speed = <460800>;
+// };

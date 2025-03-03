@@ -45,7 +45,7 @@ class SerialPlotterWindow(QMainWindow):
         self.buffer_capacity = self.buffer_sizes[0]
 
         self.serial_port = QSerialPort()
-        self.serial_port.setPortName("COM8")
+        self.serial_port.setPortName("COM9")
         self.serial_port.setBaudRate(115200)
         self.serial_port.readyRead.connect(self.receive_serial_data)
 

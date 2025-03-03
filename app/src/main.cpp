@@ -30,7 +30,7 @@
 #include "MAX30101.hpp"
 
 bool is_use_display = false;
-bool is_use_ble = true;
+bool is_use_ble = false;
 bool is_use_sd = false;
 bool is_use_ppg = true;
 bool is_use_acc = true;
@@ -96,7 +96,7 @@ lv_obj_t *text_label;
 static const struct gpio_dt_spec sw0 = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
+static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 
 const struct device *display_dev, *max30101_dev, *adxl_dev;
 
@@ -486,274 +486,87 @@ int main(void)
 	return 0;
 }
 
-void calbrate_ppg()
+void calbrate_ppg(void)
 {
-	// Setup to sense up to 18 inches, max LED brightness
-	uint8_t templedBrightnessRed = 0; // Options: 0=Off to 255=50mA
-	uint8_t templedBrightnessIR = 0;  // Options: 0=Off to 255=50mA
-	uint8_t templedBrightnessGreen = 0; // Options: 0=Off to 255=50mA
+    LOG_INF("Calibrating PPG sensor...");
+	// Initial setup with low brightness values
+    uint8_t templedBrightnessRed = 0;    
+    uint8_t templedBrightnessIR = 0;     
+    uint8_t templedBrightnessGreen = 0;  
 
-	uint8_t sampleAverage = 1; // Options: 1, 2, 4, 8, 16, 32
-	uint8_t ledMode = 3;	   // Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green
-	int sampleRate = 100;	   // Options: 50, 100, 200, 400, 800, 1000, 1600, 3200
-	int pulseWidth = 215;	   // Options: 69, 118, 215, 411
-	int adcRange = 16384;	   // Options: 2048, 4096, 8192, 16384
+    uint8_t sampleAverage = 1;    // Use 1 for faster response during calibration
+    uint8_t ledMode = 3;          // All LEDs
+    int sampleRate = 1600;         // 100Hz
+    int pulseWidth = 215;
+    int adcRange = 16384;
 
-	ppg.setup(templedBrightnessRed, templedBrightnessRed, templedBrightnessRed, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+    const uint32_t TARGET_DC = 262144 / 2;  // Target DC level
+    const uint32_t TOLERANCE = 4096;        // Tolerance range
+    bool is_calibrating = true;
+    int stable_count = 0;
 
-	uint32_t red;
-	uint32_t ir;
-	uint32_t green;
-	uint32_t samplesTaken = 0;
-	float sampleRateInHz;
-	int sampleingRateTarget = (sampleRate / sampleAverage) + 1;
-	uint32_t strat_time = k_uptime_get_32();
+    ppg.setup(templedBrightnessRed, templedBrightnessIR, templedBrightnessGreen, 
+              sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
 
-	int increase_count = 0;
-	int decrease_count = 0;
+    while (is_calibrating) {
+        ppg.check();
+        
+        while (ppg.available()) {
+            uint32_t red = ppg.getFIFORed();
+            uint32_t ir = ppg.getFIFOIR();
+            uint32_t green = ppg.getFIFOGreen();
 
-	bool is_red_calibrating = true;
-	bool is_ir_calibrating = true;
-	bool is_green_calibrating = true;
+            // Adjust RED LED
+            if (red > TARGET_DC + TOLERANCE) {
+                templedBrightnessRed = MAX(0, templedBrightnessRed - 1);
+            } else if (red < TARGET_DC - TOLERANCE) {
+                templedBrightnessRed = MIN(255, templedBrightnessRed + 1);
+            }
 
-	templedBrightnessRed = 0;
+            // Adjust IR LED
+            if (ir > TARGET_DC + TOLERANCE) {
+                templedBrightnessIR = MAX(0, templedBrightnessIR - 1);
+            } else if (ir < TARGET_DC - TOLERANCE) {
+                templedBrightnessIR = MIN(255, templedBrightnessIR + 1);
+            }
 
-	do
-	{
-		ppg.check(); // Check the sensor, read up to 3 samples
+            // // Adjust GREEN LED
+            // if (green > TARGET_DC + TOLERANCE) {
+            //     templedBrightnessGreen = MAX(0, templedBrightnessGreen - 1);
+            // } else if (green < TARGET_DC - TOLERANCE) {
+            //     templedBrightnessGreen = MIN(255, templedBrightnessGreen + 1);
+            // }
 
-		while (ppg.available()) // do we have new data?
-		{
-			templedBrightnessIR = 127;
-			templedBrightnessGreen = 127;
+			templedBrightnessGreen = 255;
+            // Update LED brightness
+            ppg.setPulseAmplitudeRed(templedBrightnessRed);
+            ppg.setPulseAmplitudeIR(templedBrightnessIR);
+            ppg.setPulseAmplitudeGreen(templedBrightnessGreen);
 
+            // Print current values
+            printk("R:%d(%d),IR:%d(%d),G:%d(%d)\n",
+                   templedBrightnessRed, red,
+                   templedBrightnessIR, ir,
+                   templedBrightnessGreen, green);
 
-			samplesTaken++;
+            // Check if all LEDs are within tolerance
+            if (abs(red - TARGET_DC) < TOLERANCE &&
+                abs(ir - TARGET_DC) < TOLERANCE 
+                ) {
+                    is_calibrating = false;
+                    ledBrightnessRed = templedBrightnessRed;
+                    ledBrightnessIR = templedBrightnessIR;
+                    ledBrightnessGreen = templedBrightnessGreen;
+                    break;
+                
+            } 
+            ppg.nextSample();
+        }
+        // k_sleep(K_MSEC(10));  // Prevent tight loop
+    }
 
-			red = ppg.getFIFORed();
-			ir = ppg.getFIFOIR();
-			green = ppg.getFIFOGreen();
-
-			sampleRateInHz = samplesTaken / ((k_uptime_get_32() - strat_time) / 1000.0);
-
-			if (samplesTaken % sampleingRateTarget == 0)
-			{
-				samplesTaken = 0;
-			}
-
-			// Print PPG data only if accelerometer data not ready
-			printk("C:%d,R:%d,IR:%d,G:%d\n",
-				   samplesTaken, red, ir, green);
-
-			ppg.nextSample(); // We're finished with this sample so move to next sample
-
-			if (red > (uint32_t)262144 / 2)
-			{
-				if(templedBrightnessRed >0) {
-					templedBrightnessRed--;
-				} else {
-					templedBrightnessRed = 0;
-					is_red_calibrating = false;
-					ledBrightnessRed = templedBrightnessRed;
-					break;
-				}
-				ppg.setPulseAmplitudeRed(templedBrightnessRed);
-				increase_count++;
-				printk("R led down:%d, I_count:%d\n", templedBrightnessRed, increase_count);
-			}
-			else if (red < (uint32_t)262144 / 2)
-			{
-				if (templedBrightnessRed < 255) {
-					templedBrightnessRed++;
-				} else {
-					templedBrightnessRed = 255;
-					is_red_calibrating = false;
-					ledBrightnessRed = templedBrightnessRed;
-					break;
-				}
-				ppg.setPulseAmplitudeRed(templedBrightnessRed);
-				decrease_count++;
-				printk("R led up:%d, D_count:%d\n", templedBrightnessRed, decrease_count);
-			}
-			else
-			{
-				printk("Calibration done. R:%d\n", templedBrightnessRed);
-				is_red_calibrating = false;
-				ledBrightnessRed = templedBrightnessRed;
-				break;
-			}
-
-			if ((increase_count > 10) && (decrease_count > 10))
-			{
-				printk("Calibration done. R:%d\n", templedBrightnessRed);
-				is_red_calibrating = false;
-				ledBrightnessRed = templedBrightnessRed;
-				break;
-			}
-		}
-	} while (is_red_calibrating);
-
-	increase_count = 0;
-	decrease_count = 0;
-
-	templedBrightnessIR = 0;
-
-	do
-	{
-		ppg.check(); // Check the sensor, read up to 3 samples
-
-		while (ppg.available()) // do we have new data?
-		{
-			templedBrightnessRed = 127;
-			templedBrightnessGreen = 127;
-			
-			samplesTaken++;
-
-			red = ppg.getFIFORed();
-			ir = ppg.getFIFOIR();
-			green = ppg.getFIFOGreen();
-
-			sampleRateInHz = samplesTaken / ((k_uptime_get_32() - strat_time) / 1000.0);
-
-			if (samplesTaken % sampleingRateTarget == 0)
-			{
-				samplesTaken = 0;
-			}
-
-			// Print PPG data only if accelerometer data not ready
-			printk("C:%d,R:%d,IR:%d,G:%d\n",
-				   samplesTaken, red, ir, green);
-
-			ppg.nextSample(); // We're finished with this sample so move to next sample
-
-			if (ir > (uint32_t)262144 / 2)
-			{
-				if(templedBrightnessIR >0) {
-					templedBrightnessIR--;
-				} else {
-					templedBrightnessIR = 0;
-					is_ir_calibrating = false;
-					ledBrightnessIR = templedBrightnessIR;
-					break;
-				}
-				
-				ppg.setPulseAmplitudeIR(templedBrightnessIR);
-				increase_count++;
-				printk("I led down:%d, I_count:%d\n", templedBrightnessIR, increase_count);
-			}
-			else if (ir < (uint32_t)262144 / 2)
-			{
-				if (templedBrightnessIR < 255) {
-					templedBrightnessIR++;
-				} else {
-					templedBrightnessIR = 255;
-					is_ir_calibrating = false;
-					ledBrightnessIR = templedBrightnessIR;
-					break;
-				}
-
-				ppg.setPulseAmplitudeIR(templedBrightnessIR);	
-				decrease_count++;
-				printk("I led up:%d, D_count:%d\n", templedBrightnessIR, decrease_count);
-			}
-			else
-			{
-				printk("Calibration done. I:%d\n", templedBrightnessIR);
-				is_ir_calibrating = false;
-				ledBrightnessIR = templedBrightnessIR;
-				break;
-			}
-
-			if ((increase_count > 10) && (decrease_count > 10))
-			{
-				printk("Calibration done. I:%d\n", templedBrightnessIR);
-				is_ir_calibrating = false;
-				ledBrightnessIR = templedBrightnessIR;
-				break;
-			}
-		}
-	} while (is_ir_calibrating);
-
-	increase_count = 0;
-	decrease_count = 0;
-
-	templedBrightnessGreen = 0;
-
-	do
-	{
-		ppg.check(); // Check the sensor, read up to 3 samples
-
-		while (ppg.available()) // do we have new data?
-		{
-			templedBrightnessRed = 127;
-			templedBrightnessIR = 127;
-			
-			samplesTaken++;
-
-			red = ppg.getFIFORed();
-			ir = ppg.getFIFOIR();
-			green = ppg.getFIFOGreen();
-
-			sampleRateInHz = samplesTaken / ((k_uptime_get_32() - strat_time) / 1000.0);
-
-			if (samplesTaken % sampleingRateTarget == 0)
-			{
-				samplesTaken = 0;
-			}
-
-			// Print PPG data only if accelerometer data not ready
-			printk("C:%d,R:%d,IR:%d,G:%d\n",
-				   samplesTaken, red, ir, green);
-
-			ppg.nextSample(); // We're finished with this sample so move to next sample
-
-			if (green > (uint32_t)262144 / 2)
-			{
-				if(templedBrightnessGreen >0) {
-					templedBrightnessGreen--;
-				} else {
-					templedBrightnessGreen = 0;
-					is_green_calibrating = false;
-					ledBrightnessGreen = templedBrightnessGreen;
-					break;
-				}
-				ppg.setPulseAmplitudeGreen(templedBrightnessGreen);
-				increase_count++;
-				printk("G led down:%d, I_count:%d\n", templedBrightnessGreen, increase_count);
-			}
-			else if (green < (uint32_t)262144 / 2)
-			{
-				if (templedBrightnessGreen < 255) {
-					templedBrightnessGreen++;
-				} else {
-					templedBrightnessGreen = 255;
-					is_green_calibrating = false;
-					ledBrightnessGreen = templedBrightnessGreen;
-					break;
-				}
-				ppg.setPulseAmplitudeGreen(templedBrightnessGreen);
-				decrease_count++;
-				printk("G led up:%d, D_count:%d\n", templedBrightnessGreen, decrease_count);
-			}
-			else
-			{
-				printk("Calibration done. G:%d\n", templedBrightnessGreen);
-				is_green_calibrating = false;
-				ledBrightnessGreen = templedBrightnessGreen;
-				break;
-			}
-
-			if ((increase_count > 10) && (decrease_count > 10))
-			{
-				printk("Calibration done. G:%d\n", templedBrightnessGreen);
-				is_green_calibrating = false;
-				ledBrightnessGreen = templedBrightnessGreen;
-				break;
-			}
-		}
-	} while (is_green_calibrating);
-
-	printk("Calibration done. R:%d, I:%d, G:%d\n", ledBrightnessRed, ledBrightnessIR, ledBrightnessGreen);
+    LOG_INF("Calibration complete - R:%d, IR:%d, G:%d\n", 
+            ledBrightnessRed, ledBrightnessIR, ledBrightnessGreen);
 }
 
 void ppg_entry_point(void *a, void *b, void *c)
