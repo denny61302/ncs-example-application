@@ -29,6 +29,8 @@
 
 #include "MAX30101.hpp"
 
+#include "arm_math.h"
+
 bool is_use_display = false;
 bool is_use_ble = false;
 bool is_use_sd = false;
@@ -61,6 +63,38 @@ extern void acc_entry_point(void *, void *, void *);
 K_THREAD_DEFINE(acc_tid, PPG_STACK_SIZE,
 				acc_entry_point, NULL, NULL, NULL,
 				PPG_PRIORITY, 0, 0);
+
+#define IIR_ORDER 2
+#define IIR_NUMSTAGES (IIR_ORDER / 2)
+
+static float32_t m_biquad_red_state[IIR_ORDER];
+static float32_t m_biquad_ir_state[IIR_ORDER];
+static float32_t m_biquad_green_state[IIR_ORDER];
+static float32_t m_biquad_coeffs[5 * IIR_NUMSTAGES] =
+	{
+		0.274727,
+		0.549454,
+		0.274727,
+		0.073624,
+	   -0.172531};
+
+arm_biquad_cascade_df2T_instance_f32 const red_iir_inst =
+	{
+		IIR_ORDER / 2,
+		m_biquad_red_state,
+		m_biquad_coeffs};
+
+arm_biquad_cascade_df2T_instance_f32 const ir_iir_inst =
+	{
+		IIR_ORDER / 2,
+		m_biquad_ir_state,
+		m_biquad_coeffs};
+
+arm_biquad_cascade_df2T_instance_f32 const green_iir_inst =
+	{
+		IIR_ORDER / 2,
+		m_biquad_green_state,
+		m_biquad_coeffs};
 
 MAX30101 ppg = MAX30101();
 
@@ -488,85 +522,92 @@ int main(void)
 
 void calbrate_ppg(void)
 {
-    LOG_INF("Calibrating PPG sensor...");
+	LOG_INF("Calibrating PPG sensor...");
 	// Initial setup with low brightness values
-    uint8_t templedBrightnessRed = 0;    
-    uint8_t templedBrightnessIR = 0;     
-    uint8_t templedBrightnessGreen = 0;  
+	uint8_t templedBrightnessRed = 0;
+	uint8_t templedBrightnessIR = 0;
+	uint8_t templedBrightnessGreen = 0;
 
-    uint8_t sampleAverage = 1;    // Use 1 for faster response during calibration
-    uint8_t ledMode = 3;          // All LEDs
-    int sampleRate = 1600;         // 100Hz
-    int pulseWidth = 215;
-    int adcRange = 16384;
+	uint8_t sampleAverage = 1; // Use 1 for faster response during calibration
+	uint8_t ledMode = 3;	   // All LEDs
+	int sampleRate = 1600;	   // 100Hz
+	int pulseWidth = 215;
+	int adcRange = 16384;
 
-    const uint32_t TARGET_DC = 262144 / 2;  // Target DC level
-    const uint32_t TOLERANCE = 4096;        // Tolerance range
-    bool is_calibrating = true;
-    int stable_count = 0;
+	const uint32_t TARGET_DC = 262144 / 2; // Target DC level
+	const uint32_t TOLERANCE = 4096;	   // Tolerance range
+	bool is_calibrating = true;
+	int stable_count = 0;
 
-    ppg.setup(templedBrightnessRed, templedBrightnessIR, templedBrightnessGreen, 
-              sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+	ppg.setup(templedBrightnessRed, templedBrightnessIR, templedBrightnessGreen,
+			  sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
 
-    while (is_calibrating) {
-        ppg.check();
-        
-        while (ppg.available()) {
-            uint32_t red = ppg.getFIFORed();
-            uint32_t ir = ppg.getFIFOIR();
-            uint32_t green = ppg.getFIFOGreen();
+	while (is_calibrating)
+	{
+		ppg.check();
 
-            // Adjust RED LED
-            if (red > TARGET_DC + TOLERANCE) {
-                templedBrightnessRed = MAX(0, templedBrightnessRed - 1);
-            } else if (red < TARGET_DC - TOLERANCE) {
-                templedBrightnessRed = MIN(255, templedBrightnessRed + 1);
-            }
+		while (ppg.available())
+		{
+			uint32_t red = ppg.getFIFORed();
+			uint32_t ir = ppg.getFIFOIR();
+			uint32_t green = ppg.getFIFOGreen();
 
-            // Adjust IR LED
-            if (ir > TARGET_DC + TOLERANCE) {
-                templedBrightnessIR = MAX(0, templedBrightnessIR - 1);
-            } else if (ir < TARGET_DC - TOLERANCE) {
-                templedBrightnessIR = MIN(255, templedBrightnessIR + 1);
-            }
+			// Adjust RED LED
+			if (red > TARGET_DC + TOLERANCE)
+			{
+				templedBrightnessRed = MAX(0, templedBrightnessRed - 1);
+			}
+			else if (red < TARGET_DC - TOLERANCE)
+			{
+				templedBrightnessRed = MIN(255, templedBrightnessRed + 1);
+			}
 
-            // // Adjust GREEN LED
-            // if (green > TARGET_DC + TOLERANCE) {
-            //     templedBrightnessGreen = MAX(0, templedBrightnessGreen - 1);
-            // } else if (green < TARGET_DC - TOLERANCE) {
-            //     templedBrightnessGreen = MIN(255, templedBrightnessGreen + 1);
-            // }
+			// Adjust IR LED
+			if (ir > TARGET_DC + TOLERANCE)
+			{
+				templedBrightnessIR = MAX(0, templedBrightnessIR - 1);
+			}
+			else if (ir < TARGET_DC - TOLERANCE)
+			{
+				templedBrightnessIR = MIN(255, templedBrightnessIR + 1);
+			}
+
+			// // Adjust GREEN LED
+			// if (green > TARGET_DC + TOLERANCE) {
+			//     templedBrightnessGreen = MAX(0, templedBrightnessGreen - 1);
+			// } else if (green < TARGET_DC - TOLERANCE) {
+			//     templedBrightnessGreen = MIN(255, templedBrightnessGreen + 1);
+			// }
 
 			templedBrightnessGreen = 255;
-            // Update LED brightness
-            ppg.setPulseAmplitudeRed(templedBrightnessRed);
-            ppg.setPulseAmplitudeIR(templedBrightnessIR);
-            ppg.setPulseAmplitudeGreen(templedBrightnessGreen);
+			// Update LED brightness
+			ppg.setPulseAmplitudeRed(templedBrightnessRed);
+			ppg.setPulseAmplitudeIR(templedBrightnessIR);
+			ppg.setPulseAmplitudeGreen(templedBrightnessGreen);
 
-            // Print current values
-            printk("R:%d(%d),IR:%d(%d),G:%d(%d)\n",
-                   templedBrightnessRed, red,
-                   templedBrightnessIR, ir,
-                   templedBrightnessGreen, green);
+			// Print current values
+			printk("R:%d(%d),IR:%d(%d),G:%d(%d)\n",
+				   templedBrightnessRed, red,
+				   templedBrightnessIR, ir,
+				   templedBrightnessGreen, green);
 
-            // Check if all LEDs are within tolerance
-            if (abs(red - TARGET_DC) < TOLERANCE &&
-                abs(ir - TARGET_DC) < TOLERANCE 
-                ) {
-                    is_calibrating = false;
-                    ledBrightnessRed = templedBrightnessRed;
-                    ledBrightnessIR = templedBrightnessIR;
-                    ledBrightnessGreen = templedBrightnessGreen;
-                    break;
-                
-            } 
-            ppg.nextSample();
-        }
-        // k_sleep(K_MSEC(10));  // Prevent tight loop
-    }
+			// Check if all LEDs are within tolerance
+			if (abs(red - TARGET_DC) < TOLERANCE &&
+				abs(ir - TARGET_DC) < TOLERANCE)
+			{
+				is_calibrating = false;
+				ledBrightnessRed = templedBrightnessRed;
+				ledBrightnessIR = templedBrightnessIR;
+				ledBrightnessGreen = templedBrightnessGreen;
+				break;
+			}
+			ppg.nextSample();
+		}
+		// k_sleep(K_MSEC(10));  // Prevent tight loop
+	}
 
-    LOG_INF("Calibration complete - R:%d, IR:%d, G:%d\n", 
-            ledBrightnessRed, ledBrightnessIR, ledBrightnessGreen);
+	LOG_INF("Calibration complete - R:%d, IR:%d, G:%d\n",
+			ledBrightnessRed, ledBrightnessIR, ledBrightnessGreen);
 }
 
 void ppg_entry_point(void *a, void *b, void *c)
@@ -584,7 +625,6 @@ void ppg_entry_point(void *a, void *b, void *c)
 	}
 
 	// Setup to sense up to 18 inches, max LED brightness
-	
 
 	calbrate_ppg();
 
@@ -612,9 +652,10 @@ void ppg_entry_point(void *a, void *b, void *c)
 		{
 			samplesTaken++;
 
-			red = ppg.getFIFORed();
-			ir = ppg.getFIFOIR();
-			green = ppg.getFIFOGreen();
+			// Get raw values and convert to float
+			float32_t raw_red = (float32_t)ppg.getFIFORed();
+			float32_t raw_ir = (float32_t)ppg.getFIFOIR();
+			float32_t raw_green = (float32_t)ppg.getFIFOGreen();
 
 			sampleRateInHz = samplesTaken / ((k_uptime_get_32() - strat_time) / 1000.0);
 
@@ -623,9 +664,18 @@ void ppg_entry_point(void *a, void *b, void *c)
 				samplesTaken = 0;
 			}
 
+			// Apply filters (in-place processing)
+			float32_t filtered_red = raw_red;
+			float32_t filtered_ir = raw_ir;
+			float32_t filtered_green = raw_green;
+
+			arm_biquad_cascade_df2T_f32(&red_iir_inst, &raw_red, &filtered_red, 1);
+			arm_biquad_cascade_df2T_f32(&ir_iir_inst, &raw_ir, &filtered_ir, 1);
+			arm_biquad_cascade_df2T_f32(&green_iir_inst, &raw_green, &filtered_green, 1);
+
 			// Print PPG data only if accelerometer data not ready
-			printk("C:%d,R:%d,IR:%d,G:%d\n",
-				   samplesTaken, red, ir, green);
+			printk("C:%d,R:%.1f,IR:%.1f,G:%.1f\n",
+				   samplesTaken, filtered_red, filtered_ir, filtered_green);
 
 			ppg.nextSample(); // We're finished with this sample so move to next sample
 
@@ -667,7 +717,8 @@ void acc_entry_point(void *a, void *b, void *c)
 				z = sensor_value_to_double(&acc_data[2]);
 
 				// Print synchronized data
-				printk("X:%f,Y:%f,Z:%f\n", x, y, z);
+				// printk("X:%f,Y:%f,Z:%f\n", x, y, z);
+				printk("X:127,Y:127,Z:127\n");
 			}
 		}
 	}
